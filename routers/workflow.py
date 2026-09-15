@@ -1,6 +1,11 @@
+import json
+import uuid
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from dependencies import get_db
 
 from models.workflow_request import WorkflowRequest
 from models.workflow_confirmation_request import WorkflowConfirmationRequest
@@ -15,11 +20,15 @@ from services.workflow_engine import process_workflow
 from services.trusted_user_context import build_trusted_user_context
 from services.prompt_service import build_prompt
 from services.output_engine import process_ai_output
+from services.workflow_repository import (
+    save_workflow,
+    get_workflow_by_id,
+)
 
 
 router = APIRouter(
     prefix="/workflow",
-    tags=["Workflow"]
+    tags=["Workflow"],
 )
 
 
@@ -48,7 +57,7 @@ def normalize_field_value(field_type: str, value: Any):
 
 def merge_answers_into_workflow(
     workflow,
-    answers: dict[str, Any]
+    answers: dict[str, Any],
 ):
     """
     Update workflow fields using user-provided answers.
@@ -58,7 +67,7 @@ def merge_answers_into_workflow(
         if field.field_name in answers:
             field.value = normalize_field_value(
                 field.field_type,
-                answers[field.field_name]
+                answers[field.field_name],
             )
 
             field.source = "user_confirmed"
@@ -103,9 +112,13 @@ def synchronize_next_action(workflow_result: dict):
 
 
 @router.post("")
-def create_workflow(data: WorkflowRequest):
+def create_workflow(
+    data: WorkflowRequest,
+    db: Session = Depends(get_db),
+):
     """
-    Generate a workflow from the user's request.
+    Generate a workflow from the user's request
+    and save it in the SQLite database.
     """
 
     security_result = check_input_security(data.request)
@@ -113,38 +126,89 @@ def create_workflow(data: WorkflowRequest):
     if not security_result["secure"]:
         return {
             "status": "blocked",
-            "security": security_result
+            "security": security_result,
         }
 
     workflow = generate_ai_workflow(data.request)
 
+    workflow_id = str(uuid.uuid4())
+
+    saved_workflow = save_workflow(
+        db=db,
+        workflow_id=workflow_id,
+        workflow_type=workflow.workflow_type,
+        user_request=workflow.user_request,
+        workflow_data=workflow.model_dump(),
+        status="awaiting_confirmation",
+    )
+
     return {
         "status": "awaiting_confirmation",
         "security": security_result,
-        "workflow": workflow
+        "workflow_id": saved_workflow.workflow_id,
+        "workflow": workflow,
+    }
+
+
+@router.get("/{workflow_id}")
+def get_saved_workflow(
+    workflow_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve a saved workflow from SQLite by workflow ID.
+    """
+
+    workflow = get_workflow_by_id(
+        db=db,
+        workflow_id=workflow_id,
+    )
+
+    if workflow is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Workflow not found",
+        )
+
+    try:
+        workflow_data = json.loads(workflow.workflow_data)
+    except json.JSONDecodeError:
+        workflow_data = workflow.workflow_data
+
+    return {
+        "id": workflow.id,
+        "workflow_id": workflow.workflow_id,
+        "workflow_type": workflow.workflow_type,
+        "user_request": workflow.user_request,
+        "status": workflow.status,
+        "workflow_data": workflow_data,
+        "created_at": workflow.created_at,
+        "updated_at": workflow.updated_at,
     }
 
 
 @router.post("/confirm")
-def confirm_workflow(data: WorkflowConfirmationRequest):
+def confirm_workflow(
+    data: WorkflowConfirmationRequest,
+):
     """
     Confirm workflow fields using user answers.
     """
 
     workflow = merge_answers_into_workflow(
         data.workflow,
-        data.answers
+        data.answers,
     )
 
     trusted_context = build_context_from_workflow(workflow)
 
     workflow_result = process_workflow(
         workflow,
-        trusted_user_context=trusted_context
+        trusted_user_context=trusted_context,
     )
 
     workflow_result = synchronize_next_action(
-        workflow_result
+        workflow_result,
     )
 
     return workflow_result
@@ -152,7 +216,7 @@ def confirm_workflow(data: WorkflowConfirmationRequest):
 
 @router.post("/missing-information")
 def get_missing_information(
-    data: WorkflowConfirmationRequest
+    data: WorkflowConfirmationRequest,
 ):
     """
     Return missing required and optional fields.
@@ -160,18 +224,18 @@ def get_missing_information(
 
     workflow = merge_answers_into_workflow(
         data.workflow,
-        data.answers
+        data.answers,
     )
 
     trusted_context = build_context_from_workflow(workflow)
 
     workflow_result = process_workflow(
         workflow,
-        trusted_user_context=trusted_context
+        trusted_user_context=trusted_context,
     )
 
     workflow_result = synchronize_next_action(
-        workflow_result
+        workflow_result,
     )
 
     if workflow_result["status"] != "valid":
@@ -184,19 +248,19 @@ def get_missing_information(
         "workflow": workflow_result["workflow"],
         "missing_required_fields": evaluation.get(
             "missing_required_fields",
-            []
+            [],
         ),
         "optional_missing_fields": evaluation.get(
             "optional_missing_fields",
-            []
+            [],
         ),
-        "next_action": evaluation.get("next_action")
+        "next_action": evaluation.get("next_action"),
     }
 
 
 @router.post("/additional-answers")
 def submit_additional_answers(
-    data: AdditionalAnswersRequest
+    data: AdditionalAnswersRequest,
 ):
     """
     Add additional answers to an existing workflow.
@@ -204,18 +268,18 @@ def submit_additional_answers(
 
     workflow = merge_answers_into_workflow(
         data.workflow,
-        data.answers
+        data.answers,
     )
 
     trusted_context = build_context_from_workflow(workflow)
 
     workflow_result = process_workflow(
         workflow,
-        trusted_user_context=trusted_context
+        trusted_user_context=trusted_context,
     )
 
     workflow_result = synchronize_next_action(
-        workflow_result
+        workflow_result,
     )
 
     return workflow_result
@@ -223,7 +287,7 @@ def submit_additional_answers(
 
 @router.post("/generate-prompt")
 def generate_workflow_prompt(
-    data: GeneratePromptRequest
+    data: GeneratePromptRequest,
 ):
     """
     Generate the final prompt for an AI model.
@@ -235,11 +299,11 @@ def generate_workflow_prompt(
 
     workflow_result = process_workflow(
         workflow,
-        trusted_user_context=trusted_context
+        trusted_user_context=trusted_context,
     )
 
     workflow_result = synchronize_next_action(
-        workflow_result
+        workflow_result,
     )
 
     if workflow_result["status"] != "valid":
@@ -257,24 +321,24 @@ def generate_workflow_prompt(
             "workflow": workflow_result["workflow"],
             "missing_required_fields": evaluation.get(
                 "missing_required_fields",
-                []
-            )
+                [],
+            ),
         }
 
     prompt = build_prompt(
-        workflow_result["workflow"]
+        workflow_result["workflow"],
     )
 
     return {
         "status": "prompt_generated",
         "workflow": workflow_result["workflow"],
-        "prompt": prompt
+        "prompt": prompt,
     }
 
 
 @router.post("/generate-response")
 def generate_workflow_response(
-    data: GenerateResponseRequest
+    data: GenerateResponseRequest,
 ):
     """
     Generate and validate the final AI response.
@@ -286,11 +350,11 @@ def generate_workflow_response(
 
     workflow_result = process_workflow(
         workflow,
-        trusted_user_context=trusted_context
+        trusted_user_context=trusted_context,
     )
 
     workflow_result = synchronize_next_action(
-        workflow_result
+        workflow_result,
     )
 
     if workflow_result["status"] != "valid":
@@ -308,24 +372,24 @@ def generate_workflow_response(
             "workflow": workflow_result["workflow"],
             "missing_required_fields": evaluation.get(
                 "missing_required_fields",
-                []
-            )
+                [],
+            ),
         }
 
     prompt = build_prompt(
-        workflow_result["workflow"]
+        workflow_result["workflow"],
     )
 
     ai_response = generate_ai_response(prompt)
 
     output_result = process_ai_output(
         ai_response,
-        workflow_result["workflow"]
+        workflow_result["workflow"],
     )
 
     return {
         "status": output_result.get("status"),
         "workflow": workflow_result["workflow"],
         "prompt": prompt,
-        "output": output_result
+        "output": output_result,
     }

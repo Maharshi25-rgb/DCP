@@ -9,294 +9,235 @@ load_dotenv()
 client = OpenAI()
 
 
-def build_workflow_generation_prompt(user_request: str):
-
+def build_workflow_generation_prompt(user_request: str) -> str:
     prompt = f"""
 You are the DCP AI Workflow Generator.
 
-Analyze the user's request and create the most appropriate workflow.
+Your task is to analyze the user's request and return one valid
+GenericWorkflow object matching the provided schema.
 
 USER REQUEST:
 {user_request}
 
+CRITICAL OUTPUT RULES:
 
-IMPORTANT INFORMATION EXTRACTION RULES:
+1. The exact USER REQUEST above is authoritative.
 
-1. The USER REQUEST is the authoritative source for user-provided
-   information.
+2. Never use placeholder values such as:
+   - "string"
+   - "integer"
+   - "boolean"
+   - "date"
+   - "list"
+   - "enum"
+   - "unknown"
+   - "None"
+   - "null"
+   - "N/A"
 
-2. Carefully scan the ENTIRE USER REQUEST before creating the workflow.
+3. Never copy schema example values into the output.
 
-3. ANY value explicitly stated by the user MUST be placed directly
-   into the corresponding WorkflowField.value.
+4. The field `user_request` must contain the exact user request.
+   Do not replace it with "string".
 
-4. Information explicitly provided by the user MUST NOT be placed
-   into WorkflowSuggestion.
+5. Extract every value explicitly provided by the user.
 
-5. For every value explicitly provided by the user:
-   - Set the corresponding field.value.
-   - Set source = "user_confirmed".
-   - Do not create a suggestion for that same information.
+6. Every explicitly provided value must be placed in the relevant
+   WorkflowField.value.
 
-6. Only create a WorkflowSuggestion for information that:
-   - was NOT explicitly provided by the user, and
-   - could be useful for completing the request.
+7. Every explicitly provided value must use:
+   source = "user_confirmed"
 
-7. Never convert user-provided information into an AI suggestion.
+8. Do not create a suggestion for information already provided
+   by the user.
 
-8. Example:
+9. Missing information must use:
+   value = null
+   source = "missing"
 
-   User says:
-   "Plan a 5 day trip"
+10. Never use source = "assumed" unless a real concrete value is
+    provided.
 
-   Correct:
-   trip_duration_days:
-       value = "5"
-       field_type = "integer"
-       source = "user_confirmed"
+11. Create only fields relevant to the user's request.
 
-   Incorrect:
-   trip_duration_days:
-       value = null
+12. Every field must have:
+    - field_name
+    - value
+    - field_type
+    - required
+    - question
+    - source
 
-   suggestion:
-       value = "5"
+13. Use only these field types:
+    - string
+    - integer
+    - boolean
+    - date
+    - list
+    - enum
 
-9. User says:
-   "for 4 people"
+14. Field names must use lowercase snake_case.
 
-   Correct:
-   number_of_people:
-       value = "4"
-       field_type = "integer"
-       source = "user_confirmed"
+15. workflow_type must use lowercase snake_case.
 
-10. User says:
-    "budget is 50000 rupees"
+16. If a required field is missing:
+    next_action = "collect_information"
 
-    Correct:
-    budget_in_rupees:
-        value = "50000"
-        field_type = "integer"
-        source = "user_confirmed"
+17. If all required fields have values:
+    next_action = "generate_prompt"
 
-11. User says:
-    "starting on 2026-12-20"
+18. Use next_action = "complete" only when the workflow is fully
+    completed and no further action is required.
 
-    Correct:
-    start_date:
-        value = "2026-12-20"
-        field_type = "date"
-        source = "user_confirmed"
+VALUE EXTRACTION EXAMPLES:
 
-12. Do not ask the user again for information that already exists
-    anywhere in the USER REQUEST.
+Example 1:
+User request:
+Plan a 5 day trip for 4 people.
 
-13. Do not use suggestions as a second representation of
-    user-provided information.
+Correct fields:
+- trip_duration_days:
+  value = "5"
+  field_type = "integer"
+  source = "user_confirmed"
 
+- number_of_people:
+  value = "4"
+  field_type = "integer"
+  source = "user_confirmed"
 
-GENERAL WORKFLOW RULES:
+Incorrect:
+- value = "string"
+- value = null
+- suggestion containing "5" or "4"
 
-14. Understand what the user wants to do.
+Example 2:
+User request:
+My budget is 50000 rupees.
 
-15. Determine an appropriate workflow_type.
+Correct:
+- budget_in_rupees:
+  value = "50000"
+  field_type = "integer"
+  source = "user_confirmed"
 
-16. Create only the fields needed to complete the user's request.
+Example 3:
+User request:
+Starting on 2026-12-20.
 
-17. Do not assume the request is related to travel.
+Correct:
+- start_date:
+  value = "2026-12-20"
+  field_type = "date"
+  source = "user_confirmed"
 
-18. Do not create unnecessary fields.
+Example 4:
+User request:
+Convert the text "hello world" to uppercase.
 
-19. Mark essential fields as required=True.
+Correct:
+- input_string:
+  value = "hello world"
+  field_type = "string"
+  source = "user_confirmed"
 
-20. Mark optional fields as required=False.
-
-21. If information is missing:
-    - use value = null
-    - use source = "missing"
-
-22. Never use source = "assumed" when value = null.
-
-23. Use source = "assumed" only when DCP explicitly allows
-    a concrete assumption and a real value is provided.
-
-24. Create a clear question for every field.
-
-
-FIELD TYPES:
-
-25. Select the correct field_type for every field.
-
-Allowed field types:
-
-- string
-  Normal text values.
-
-- integer
-  Whole numbers such as quantity, number of people,
-  duration in days, age, or whole-number budget.
-
-- boolean
-  True/false or yes/no information.
-
-- date
-  Exact calendar dates.
-
-- list
-  Multiple values.
-
-- enum
-  A field with a limited set of possible choices.
-
-26. Do not use integer for decimal values.
-
-27. Do not use boolean for normal text.
-
-28. Do not use date for vague periods such as "next month"
-    unless an exact date is known.
-
-29. workflow_type must use lowercase snake_case.
-
-30. Every field_name must use lowercase snake_case.
-
-
-NEXT ACTION:
-
-31. next_action must use only:
-
-- collect_information
-- generate_prompt
-- complete
-
-32. If any required field is missing:
-
-    next_action = collect_information
-
-33. If all required fields have values:
-
-    next_action = generate_prompt
-
-
-GENERAL SAFETY AND ACCURACY:
-
-34. Do not invent information that the user did not provide.
-
-35. Keep the workflow minimal and relevant to the user's request.
-
+The `user_request` field must contain:
+{user_request}
 
 SUGGESTION RULES:
 
-36. Suggestions are optional recommendations only.
+1. Suggestions are optional.
+2. Only create a suggestion when a concrete recommendation is useful.
+3. Never create a suggestion for information already provided.
+4. Never use placeholder or empty suggestion values.
+5. Never use:
+   - null
+   - None
+   - N/A
+   - unknown
+   - empty string
+6. Missing information must be represented by a WorkflowField,
+   not by a suggestion.
+7. If no useful recommendation exists, return an empty suggestions list.
 
-37. Never create a WorkflowSuggestion with:
-    - "null"
-    - "None"
-    - "N/A"
-    - "unknown"
-    - ""
-    - an empty value
+FINAL VALIDATION BEFORE RETURNING:
 
-38. Missing information must be represented by a WorkflowField
-    with value = null and source = "missing".
+Check that:
 
-39. Do NOT create a WorkflowSuggestion just to represent
-    missing information.
-
-40. Every WorkflowSuggestion must contain a real, concrete
-    proposed value.
-
-41. If a required piece of information is missing, create the
-    corresponding WorkflowField with value = null.
-
-42. If an AI recommendation is useful, it may be represented
-    as a WorkflowSuggestion, but it must contain a concrete
-    proposed value.
-
-43. Example:
-
-    User did not provide trip duration.
-
-    Valid AI suggestion:
-
-    WorkflowSuggestion:
-        field_name = "trip_duration_days"
-        value = "5"
-        reason = "Five days provides enough time to cover several
-                  major destinations in Kerala."
-        status = "pending_confirmation"
-
-44. Do not put missing information into WorkflowSuggestion.
-
-45. Do not create suggestions for information that the user
-    already provided.
-
-46. Do not create a suggestion whose value is simply a statement
-    that information is missing.
-
-47. If there is no concrete recommendation to make, do not create
-    a suggestion.
-
-48. A WorkflowSuggestion represents an actual proposed value,
-    not a question and not a placeholder.
-
-49. Do not invent a specific calendar date when the user has not
-    provided a date.
-
-50. A missing start date must remain:
-
-    WorkflowField:
-        value = null
-        source = "missing"
-
-51. Do not suggest arbitrary, historical, or outdated dates such as
-    "2024-12-01" when the user has not provided a date.
-
-
-FINAL CONSISTENCY CHECK:
-
-Before returning the workflow, verify:
-
-52. Every value explicitly provided by the user appears in a
-    WorkflowField.
-
-53. Every user-provided field has source = "user_confirmed".
-
-54. No user-provided value is duplicated as a suggestion.
-
-55. Missing information uses:
-    value = null
-    source = "missing"
-
-56. No suggestion contains:
-    "null", "None", "N/A", "unknown", or an empty value.
-
-57. Every suggestion contains a concrete proposed value.
-
-58. If required information is missing, next_action must be
-    "collect_information".
-
-59. If all required information is available,
-    next_action must be "generate_prompt".
-
-60. Return only the workflow matching the DCP schema.
+1. workflow.user_request equals the exact USER REQUEST.
+2. No field value is a placeholder.
+3. No field value is the literal string "string" unless the user
+   explicitly provided the word "string".
+4. Every user-provided value is marked user_confirmed.
+5. Missing required values are null with source missing.
+6. No user-provided value is duplicated as a suggestion.
+7. next_action matches the required-field completion status.
+8. Return only the GenericWorkflow object.
 """
 
     return prompt
 
 
-def generate_ai_workflow(user_request: str):
-
-    prompt = build_workflow_generation_prompt(
-        user_request
-    )
+def generate_ai_workflow(user_request: str) -> GenericWorkflow:
+    prompt = build_workflow_generation_prompt(user_request)
 
     response = client.responses.parse(
         model="gpt-4.1-mini",
-        input=prompt,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "You generate accurate structured workflows. "
+                    "Never use schema placeholders. "
+                    "Always preserve the exact user request."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
         text_format=GenericWorkflow,
     )
 
     workflow = response.output_parsed
+
+    if workflow is None:
+        raise ValueError(
+            "The AI did not return a valid structured workflow."
+        )
+
+    # Enforce the original request in application code.
+    workflow.user_request = user_request
+
+    # Remove accidental placeholder values generated by the AI.
+    placeholder_values = {
+        "string",
+        "integer",
+        "boolean",
+        "date",
+        "list",
+        "enum",
+        "unknown",
+        "None",
+        "null",
+        "N/A",
+    }
+
+    for field in workflow.fields:
+        if field.value in placeholder_values:
+            field.value = None
+            field.source = "missing"
+
+    # Ensure the next action is consistent with required fields.
+    required_fields_missing = any(
+        field.required and field.value is None
+        for field in workflow.fields
+    )
+
+    if required_fields_missing:
+        workflow.next_action = "collect_information"
+    else:
+        workflow.next_action = "generate_prompt"
 
     return workflow
