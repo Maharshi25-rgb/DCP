@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -14,6 +13,8 @@ def save_workflow(
     workflow_data: dict,
     status: str = "created",
 ) -> WorkflowDB:
+    import json
+
     workflow = WorkflowDB(
         workflow_id=workflow_id,
         workflow_type=workflow_type,
@@ -45,7 +46,10 @@ def update_workflow_status(
     workflow_id: str,
     status: str,
 ) -> WorkflowDB | None:
-    workflow = get_workflow_by_id(db, workflow_id)
+    workflow = get_workflow_by_id(
+        db=db,
+        workflow_id=workflow_id,
+    )
 
     if workflow is None:
         return None

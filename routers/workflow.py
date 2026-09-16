@@ -23,6 +23,7 @@ from services.output_engine import process_ai_output
 from services.workflow_repository import (
     save_workflow,
     get_workflow_by_id,
+    update_workflow_status,
 )
 
 
@@ -150,49 +151,14 @@ def create_workflow(
     }
 
 
-@router.get("/{workflow_id}")
-def get_saved_workflow(
-    workflow_id: str,
-    db: Session = Depends(get_db),
-):
-    """
-    Retrieve a saved workflow from SQLite by workflow ID.
-    """
-
-    workflow = get_workflow_by_id(
-        db=db,
-        workflow_id=workflow_id,
-    )
-
-    if workflow is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Workflow not found",
-        )
-
-    try:
-        workflow_data = json.loads(workflow.workflow_data)
-    except json.JSONDecodeError:
-        workflow_data = workflow.workflow_data
-
-    return {
-        "id": workflow.id,
-        "workflow_id": workflow.workflow_id,
-        "workflow_type": workflow.workflow_type,
-        "user_request": workflow.user_request,
-        "status": workflow.status,
-        "workflow_data": workflow_data,
-        "created_at": workflow.created_at,
-        "updated_at": workflow.updated_at,
-    }
-
-
 @router.post("/confirm")
 def confirm_workflow(
     data: WorkflowConfirmationRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Confirm workflow fields using user answers.
+    Confirm workflow fields using user answers
+    and update the database status.
     """
 
     workflow = merge_answers_into_workflow(
@@ -210,6 +176,16 @@ def confirm_workflow(
     workflow_result = synchronize_next_action(
         workflow_result,
     )
+
+    if workflow_result.get("status") == "valid":
+        workflow_id = getattr(data, "workflow_id", None)
+
+        if workflow_id:
+            update_workflow_status(
+                db=db,
+                workflow_id=workflow_id,
+                status="confirmed",
+            )
 
     return workflow_result
 
@@ -288,9 +264,11 @@ def submit_additional_answers(
 @router.post("/generate-prompt")
 def generate_workflow_prompt(
     data: GeneratePromptRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Generate the final prompt for an AI model.
+    Generate the final prompt for an AI model
+    and update the database status.
     """
 
     workflow = data.workflow
@@ -329,6 +307,15 @@ def generate_workflow_prompt(
         workflow_result["workflow"],
     )
 
+    workflow_id = getattr(data, "workflow_id", None)
+
+    if workflow_id:
+        update_workflow_status(
+            db=db,
+            workflow_id=workflow_id,
+            status="prompt_generated",
+        )
+
     return {
         "status": "prompt_generated",
         "workflow": workflow_result["workflow"],
@@ -339,9 +326,11 @@ def generate_workflow_prompt(
 @router.post("/generate-response")
 def generate_workflow_response(
     data: GenerateResponseRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Generate and validate the final AI response.
+    Generate and validate the final AI response
+    and update the database status.
     """
 
     workflow = data.workflow
@@ -387,9 +376,55 @@ def generate_workflow_response(
         workflow_result["workflow"],
     )
 
+    workflow_id = getattr(data, "workflow_id", None)
+
+    if workflow_id:
+        update_workflow_status(
+            db=db,
+            workflow_id=workflow_id,
+            status="completed",
+        )
+
     return {
         "status": output_result.get("status"),
         "workflow": workflow_result["workflow"],
         "prompt": prompt,
         "output": output_result,
+    }
+
+
+@router.get("/{workflow_id}")
+def get_saved_workflow(
+    workflow_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve a saved workflow from SQLite by workflow ID.
+    """
+
+    workflow = get_workflow_by_id(
+        db=db,
+        workflow_id=workflow_id,
+    )
+
+    if workflow is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Workflow not found",
+        )
+
+    try:
+        workflow_data = json.loads(workflow.workflow_data)
+    except json.JSONDecodeError:
+        workflow_data = workflow.workflow_data
+
+    return {
+        "id": workflow.id,
+        "workflow_id": workflow.workflow_id,
+        "workflow_type": workflow.workflow_type,
+        "user_request": workflow.user_request,
+        "status": workflow.status,
+        "workflow_data": workflow_data,
+        "created_at": workflow.created_at,
+        "updated_at": workflow.updated_at,
     }
