@@ -50,6 +50,28 @@ def get_all_workflows(
     )
 
 
+def update_workflow_data(
+    db: Session,
+    workflow_id: str,
+    workflow_data: dict,
+) -> WorkflowDB | None:
+    workflow = get_workflow_by_id(
+        db=db,
+        workflow_id=workflow_id,
+    )
+
+    if workflow is None:
+        return None
+
+    workflow.workflow_data = json.dumps(workflow_data)
+    workflow.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(workflow)
+
+    return workflow
+
+
 def update_workflow_status(
     db: Session,
     workflow_id: str,

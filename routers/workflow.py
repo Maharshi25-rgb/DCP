@@ -25,33 +25,10 @@ from services.workflow_repository import (
     save_workflow,
     get_workflow_by_id,
     get_all_workflows,
+    update_workflow_data,
     update_workflow_status,
 )
 
-router = APIRouter()
-
-
-@router.get("/workflows")
-def list_workflows(
-    db: Session = Depends(get_db),
-):
-    workflows = get_all_workflows(db=db)
-
-    return {
-        "count": len(workflows),
-        "workflows": [
-            {
-                "id": workflow.id,
-                "workflow_id": workflow.workflow_id,
-                "workflow_type": workflow.workflow_type,
-                "user_request": workflow.user_request,
-                "status": workflow.status,
-                "created_at": workflow.created_at,
-                "updated_at": workflow.updated_at,
-            }
-            for workflow in workflows
-        ],
-    }
 
 router = APIRouter(
     prefix="/workflow",
@@ -138,6 +115,52 @@ def synchronize_next_action(workflow_result: dict):
     return workflow_result
 
 
+def save_latest_workflow_data(
+    db: Session,
+    workflow_id: str | None,
+    workflow,
+):
+    """
+    Save the latest workflow object into the database.
+    """
+
+    if not workflow_id:
+        return
+
+    update_workflow_data(
+        db=db,
+        workflow_id=workflow_id,
+        workflow_data=workflow.model_dump(),
+    )
+
+
+@router.get("/workflows")
+def list_workflows(
+    db: Session = Depends(get_db),
+):
+    """
+    Return all saved workflows.
+    """
+
+    workflows = get_all_workflows(db=db)
+
+    return {
+        "count": len(workflows),
+        "workflows": [
+            {
+                "id": workflow.id,
+                "workflow_id": workflow.workflow_id,
+                "workflow_type": workflow.workflow_type,
+                "user_request": workflow.user_request,
+                "status": workflow.status,
+                "created_at": workflow.created_at,
+                "updated_at": workflow.updated_at,
+            }
+            for workflow in workflows
+        ],
+    }
+
+
 @router.post("")
 def create_workflow(
     data: WorkflowRequest,
@@ -184,7 +207,7 @@ def confirm_workflow(
 ):
     """
     Confirm workflow fields using user answers
-    and update the database status.
+    and update the database status and data.
     """
 
     workflow = merge_answers_into_workflow(
@@ -199,19 +222,24 @@ def confirm_workflow(
         trusted_user_context=trusted_context,
     )
 
-    workflow_result = synchronize_next_action(
-        workflow_result,
-    )
+    workflow_result = synchronize_next_action(workflow_result)
 
-    if workflow_result.get("status") == "valid":
-        workflow_id = getattr(data, "workflow_id", None)
+    workflow_id = getattr(data, "workflow_id", None)
+    updated_workflow = workflow_result.get("workflow")
 
-        if workflow_id:
-            update_workflow_status(
-                db=db,
-                workflow_id=workflow_id,
-                status="confirmed",
-            )
+    if workflow_id and updated_workflow is not None:
+        save_latest_workflow_data(
+            db=db,
+            workflow_id=workflow_id,
+            workflow=updated_workflow,
+        )
+
+    if workflow_result.get("status") == "valid" and workflow_id:
+        update_workflow_status(
+            db=db,
+            workflow_id=workflow_id,
+            status="confirmed",
+        )
 
     return workflow_result
 
@@ -236,9 +264,7 @@ def get_missing_information(
         trusted_user_context=trusted_context,
     )
 
-    workflow_result = synchronize_next_action(
-        workflow_result,
-    )
+    workflow_result = synchronize_next_action(workflow_result)
 
     if workflow_result["status"] != "valid":
         return workflow_result
@@ -280,9 +306,7 @@ def submit_additional_answers(
         trusted_user_context=trusted_context,
     )
 
-    workflow_result = synchronize_next_action(
-        workflow_result,
-    )
+    workflow_result = synchronize_next_action(workflow_result)
 
     return workflow_result
 
@@ -294,7 +318,7 @@ def generate_workflow_prompt(
 ):
     """
     Generate the final prompt for an AI model
-    and update the database status.
+    and update the database status and data.
     """
 
     workflow = data.workflow
@@ -306,9 +330,7 @@ def generate_workflow_prompt(
         trusted_user_context=trusted_context,
     )
 
-    workflow_result = synchronize_next_action(
-        workflow_result,
-    )
+    workflow_result = synchronize_next_action(workflow_result)
 
     if workflow_result["status"] != "valid":
         return workflow_result
@@ -329,13 +351,19 @@ def generate_workflow_prompt(
             ),
         }
 
-    prompt = build_prompt(
-        workflow_result["workflow"],
-    )
+    final_workflow = workflow_result["workflow"]
+
+    prompt = build_prompt(final_workflow)
 
     workflow_id = getattr(data, "workflow_id", None)
 
     if workflow_id:
+        save_latest_workflow_data(
+            db=db,
+            workflow_id=workflow_id,
+            workflow=final_workflow,
+        )
+
         update_workflow_status(
             db=db,
             workflow_id=workflow_id,
@@ -344,7 +372,7 @@ def generate_workflow_prompt(
 
     return {
         "status": "prompt_generated",
-        "workflow": workflow_result["workflow"],
+        "workflow": final_workflow,
         "prompt": prompt,
     }
 
@@ -356,7 +384,7 @@ def generate_workflow_response(
 ):
     """
     Generate and validate the final AI response
-    and update the database status.
+    and update the database status and data.
     """
 
     workflow = data.workflow
@@ -368,9 +396,7 @@ def generate_workflow_response(
         trusted_user_context=trusted_context,
     )
 
-    workflow_result = synchronize_next_action(
-        workflow_result,
-    )
+    workflow_result = synchronize_next_action(workflow_result)
 
     if workflow_result["status"] != "valid":
         return workflow_result
@@ -391,20 +417,29 @@ def generate_workflow_response(
             ),
         }
 
-    prompt = build_prompt(
-        workflow_result["workflow"],
-    )
+    final_workflow = workflow_result["workflow"]
+
+    prompt = build_prompt(final_workflow)
 
     ai_response = generate_ai_response(prompt)
 
     output_result = process_ai_output(
         ai_response,
-        workflow_result["workflow"],
+        final_workflow,
     )
+
+    # Save the final workflow state as completed.
+    final_workflow.next_action = "completed"
 
     workflow_id = getattr(data, "workflow_id", None)
 
     if workflow_id:
+        save_latest_workflow_data(
+            db=db,
+            workflow_id=workflow_id,
+            workflow=final_workflow,
+        )
+
         update_workflow_status(
             db=db,
             workflow_id=workflow_id,
@@ -413,7 +448,7 @@ def generate_workflow_response(
 
     return {
         "status": output_result.get("status"),
-        "workflow": workflow_result["workflow"],
+        "workflow": final_workflow,
         "prompt": prompt,
         "output": output_result,
     }
