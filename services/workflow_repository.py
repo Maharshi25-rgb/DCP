@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -13,8 +14,6 @@ def save_workflow(
     workflow_data: dict,
     status: str = "created",
 ) -> WorkflowDB:
-    import json
-
     workflow = WorkflowDB(
         workflow_id=workflow_id,
         workflow_type=workflow_type,
@@ -38,6 +37,16 @@ def get_workflow_by_id(
         db.query(WorkflowDB)
         .filter(WorkflowDB.workflow_id == workflow_id)
         .first()
+    )
+
+
+def get_all_workflows(
+    db: Session,
+) -> list[WorkflowDB]:
+    return (
+        db.query(WorkflowDB)
+        .order_by(WorkflowDB.created_at.desc())
+        .all()
     )
 
 

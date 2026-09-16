@@ -20,12 +20,38 @@ from services.workflow_engine import process_workflow
 from services.trusted_user_context import build_trusted_user_context
 from services.prompt_service import build_prompt
 from services.output_engine import process_ai_output
+
 from services.workflow_repository import (
     save_workflow,
     get_workflow_by_id,
+    get_all_workflows,
     update_workflow_status,
 )
 
+router = APIRouter()
+
+
+@router.get("/workflows")
+def list_workflows(
+    db: Session = Depends(get_db),
+):
+    workflows = get_all_workflows(db=db)
+
+    return {
+        "count": len(workflows),
+        "workflows": [
+            {
+                "id": workflow.id,
+                "workflow_id": workflow.workflow_id,
+                "workflow_type": workflow.workflow_type,
+                "user_request": workflow.user_request,
+                "status": workflow.status,
+                "created_at": workflow.created_at,
+                "updated_at": workflow.updated_at,
+            }
+            for workflow in workflows
+        ],
+    }
 
 router = APIRouter(
     prefix="/workflow",
